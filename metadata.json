@@ -1,0 +1,8 @@
+{
+  "name": "SPLTV Smart Learning",
+  "description": "E-Modul Matematika Interaktif SMK Kelas X Fase E — Sistem Persamaan Linear Tiga Variabel (SPLTV)",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}
