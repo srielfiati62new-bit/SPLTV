@@ -112,14 +112,27 @@ export async function checkBackendHealth(): Promise<{
         spreadsheetUrl: '',
       };
     }
-    const data = (await resp.json()) as {
+    const rawText = await resp.text();
+    let data: {
       ok?: boolean;
       gasConfigured?: boolean;
       sheetsLinked?: boolean;
       spreadsheetId?: string;
       spreadsheetTitle?: string;
       spreadsheetUrl?: string;
-    };
+    } = {};
+    try {
+      data = rawText ? (JSON.parse(rawText) as typeof data) : {};
+    } catch {
+      return {
+        ok: false,
+        gasConfigured: false,
+        sheetsLinked: false,
+        spreadsheetId: '',
+        spreadsheetTitle: '',
+        spreadsheetUrl: '',
+      };
+    }
     return {
       ok: Boolean(data.ok),
       gasConfigured: Boolean(data.gasConfigured),
@@ -161,13 +174,19 @@ async function sendItemToServer(item: SyncQueueItem): Promise<{
         completedMeetingsCount: item.completedMeetingsCount,
       }),
     });
-    const data = (await resp.json()) as {
+    const rawText = await resp.text();
+    let data: {
       ok?: boolean;
       error?: string;
       syncStatus?: 'synced-gas' | 'saved-server-only' | 'gas-error';
       message?: string;
       timestamp?: string;
-    };
+    } = {};
+    try {
+      data = rawText ? (JSON.parse(rawText) as typeof data) : {};
+    } catch {
+      return { ok: false, message: `Respons server tidak valid (HTTP ${resp.status}).` };
+    }
     if (!resp.ok || !data.ok) {
       return { ok: false, message: data.error || `Gagal HTTP ${resp.status}` };
     }

@@ -91,19 +91,50 @@ export const GoogleSheetsDirectPanel: React.FC<GoogleSheetsDirectPanelProps> = (
   }, [sheetsConfig.spreadsheetId, sheetsConfig.spreadsheetUrl]);
 
   const persistServerSheetsConfig = async (cfg: Partial<SheetsLinkConfig>) => {
-    const resp = await fetch('/api/teacher/sheets-config', {
-      method: 'POST',
-      credentials: 'same-origin',
-      headers: {
-        'Content-Type': 'application/json',
-        'X-Teacher-Token': teacherToken,
-      },
-      body: JSON.stringify(cfg),
-    });
-    const data = (await resp.json()) as { ok?: boolean; sheetsConfig?: SheetsLinkConfig };
-    if (resp.ok && data.ok && data.sheetsConfig) {
-      onSheetsConfigUpdated(data.sheetsConfig);
+    const mergedLocal: SheetsLinkConfig = {
+      spreadsheetId: cfg.spreadsheetId !== undefined ? cfg.spreadsheetId : sheetsConfig.spreadsheetId,
+      spreadsheetTitle:
+        cfg.spreadsheetTitle !== undefined ? cfg.spreadsheetTitle : sheetsConfig.spreadsheetTitle,
+      spreadsheetUrl:
+        cfg.spreadsheetUrl !== undefined ? cfg.spreadsheetUrl : sheetsConfig.spreadsheetUrl,
+      lastSyncedAt: cfg.lastSyncedAt !== undefined ? cfg.lastSyncedAt : sheetsConfig.lastSyncedAt,
+    };
+    try {
+      localStorage.setItem('spltv_sheets_config_local_v1', JSON.stringify(mergedLocal));
+    } catch {
+      // Ignore storage restrictions
     }
+
+    if (!teacherToken || teacherToken === '__LOCAL_STANDALONE_MODE__') {
+      onSheetsConfigUpdated(mergedLocal);
+      return;
+    }
+
+    try {
+      const resp = await fetch('/api/teacher/sheets-config', {
+        method: 'POST',
+        credentials: 'same-origin',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-Teacher-Token': teacherToken,
+        },
+        body: JSON.stringify(cfg),
+      });
+      const rawText = await resp.text();
+      let data: { ok?: boolean; sheetsConfig?: SheetsLinkConfig } = {};
+      try {
+        data = rawText ? (JSON.parse(rawText) as { ok?: boolean; sheetsConfig?: SheetsLinkConfig }) : {};
+      } catch {
+        data = {};
+      }
+      if (resp.ok && data.ok && data.sheetsConfig) {
+        onSheetsConfigUpdated(data.sheetsConfig);
+        return;
+      }
+    } catch {
+      // Fallback to local state when server endpoint is unavailable
+    }
+    onSheetsConfigUpdated(mergedLocal);
   };
 
   const handleGoogleSignIn = async () => {

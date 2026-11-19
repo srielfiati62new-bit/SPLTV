@@ -41,9 +41,141 @@ import {
   StudentExportRow,
 } from '../utils/csvExport';
 import { solveSpltv } from '../utils/spltvSolver';
-import { evaluateQuestionCorrectness, NAV_ITEMS } from '../utils/storage';
+import {
+  calculateOverallProgress,
+  evaluateQuestionCorrectness,
+  loadIdentity,
+  loadProgress,
+  NAV_ITEMS,
+} from '../utils/storage';
 
 const TOKEN_STORAGE_KEY = 'spltv_teacher_session_token_v1';
+const STANDALONE_MODE_TOKEN = '__LOCAL_STANDALONE_MODE__';
+const LOCAL_SHEETS_CONFIG_KEY = 'spltv_sheets_config_local_v1';
+
+async function safeParseJsonResponse<T extends Record<string, unknown>>(
+  resp: Response
+): Promise<{ parsed: T | null; rawText: string }> {
+  const rawText = await resp.text();
+  if (!rawText.trim()) {
+    return { parsed: null, rawText: '' };
+  }
+  try {
+    const val = JSON.parse(rawText);
+    if (val && typeof val === 'object') {
+      return { parsed: val as T, rawText };
+    }
+    return { parsed: null, rawText };
+  } catch {
+    return { parsed: null, rawText };
+  }
+}
+
+function loadLocalSheetsConfig(): SheetsLinkConfig {
+  try {
+    const raw = localStorage.getItem(LOCAL_SHEETS_CONFIG_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as Partial<SheetsLinkConfig>;
+      return {
+        spreadsheetId: parsed.spreadsheetId || '',
+        spreadsheetTitle: parsed.spreadsheetTitle || '',
+        spreadsheetUrl: parsed.spreadsheetUrl || '',
+        lastSyncedAt: parsed.lastSyncedAt || null,
+      };
+    }
+  } catch {
+    // ignore
+  }
+  return {
+    spreadsheetId: '',
+    spreadsheetTitle: '',
+    spreadsheetUrl: '',
+    lastSyncedAt: null,
+  };
+}
+
+function buildLocalFallbackStudents(): TeacherStudentRecord[] {
+  const identity = loadIdentity();
+  if (!identity) return [];
+  const progress = loadProgress();
+  const scores: number[] = [];
+  if (progress.diagnostik) scores.push(progress.diagnostik.score);
+  if (progress.lkpd.lkpd1.completed) scores.push(progress.lkpd.lkpd1.score);
+  if (progress.lkpd.lkpd2.completed) scores.push(progress.lkpd.lkpd2.score);
+  if (progress.lkpd.lkpd3.completed) scores.push(progress.lkpd.lkpd3.score);
+  if (progress.latihan) scores.push(progress.latihan.score);
+  if (progress.sumatif) scores.push(progress.sumatif.score);
+  const rataRata =
+    scores.length > 0 ? Math.round(scores.reduce((a, b) => a + b, 0) / scores.length) : 0;
+
+  return [
+    {
+      studentId: `LOCAL-${identity.nomorAbsen.trim() || '01'}`,
+      timestamp: new Date().toISOString(),
+      nama: identity.namaLengkap,
+      kelas: identity.kelas,
+      nomorAbsen: identity.nomorAbsen,
+      diagnostik: progress.diagnostik
+        ? {
+            jumlahBenar: progress.diagnostik.correctCount,
+            jumlahSalah: progress.diagnostik.totalQuestions - progress.diagnostik.correctCount,
+            nilai: progress.diagnostik.score,
+            kategori:
+              progress.diagnostik.score >= 80
+                ? 'Siap Penuh'
+                : progress.diagnostik.score >= 60
+                  ? 'Cukup Siap'
+                  : 'Perlu Penguatan Prasyarat',
+          }
+        : null,
+      lkpd: {
+        nilaiLkpd1: progress.lkpd.lkpd1.completed ? progress.lkpd.lkpd1.score : null,
+        nilaiLkpd2: progress.lkpd.lkpd2.completed ? progress.lkpd.lkpd2.score : null,
+        nilaiLkpd3: progress.lkpd.lkpd3.completed ? progress.lkpd.lkpd3.score : null,
+        catatanGuru: '',
+      },
+      latihan: progress.latihan
+        ? {
+            jumlahSoal: progress.latihan.totalQuestions,
+            jawabanBenar: progress.latihan.correctCount,
+            jawabanSalah: progress.latihan.totalQuestions - progress.latihan.correctCount,
+            nilai: progress.latihan.score,
+          }
+        : null,
+      sumatif: progress.sumatif
+        ? {
+            nilaiAkhir: progress.sumatif.score,
+            durasiPengerjaan: '-',
+            jumlahBenar: progress.sumatif.correctCount,
+            jumlahSalah: progress.sumatif.totalQuestions - progress.sumatif.correctCount,
+            waktuPengumpulan: progress.sumatif.completedAt || new Date().toISOString(),
+          }
+        : null,
+      refleksi: progress.refleksi.completed
+        ? {
+            tingkatPemahaman: `${(
+              (progress.refleksi.ratings.konsep +
+                progress.refleksi.ratings.pemodelan +
+                progress.refleksi.ratings.substitusi +
+                progress.refleksi.ratings.eliminasi) /
+              4
+            ).toFixed(1)} / 5.0`,
+            materiDikuasai: progress.refleksi.materiDipahami || '-',
+            materiSulit: progress.refleksi.materiBelumDipahami || progress.refleksi.kesulitanSiswa || '-',
+            catatanRefleksi:
+              [progress.refleksi.strategiPemecahan, progress.refleksi.pengalamanBelajar]
+                .filter(Boolean)
+                .join(' | ') || '-',
+            updatedAt: progress.refleksi.submittedAt || new Date().toISOString(),
+          }
+        : null,
+      persentasePenyelesaian: calculateOverallProgress(progress),
+      rataRata,
+      completedMeetingsCount: progress.completedMeetings.length,
+      syncHistory: [],
+    },
+  ];
+}
 
 function safeGetToken(): string {
   try {
@@ -166,6 +298,9 @@ export const TeacherDashboardPage: React.FC = () => {
   });
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState('');
+  const [standaloneMode, setStandaloneMode] = useState<boolean>(
+    () => safeGetToken() === STANDALONE_MODE_TOKEN
+  );
 
   // Filters
   const [kelasFilter, setKelasFilter] = useState<string>('ALL');
@@ -188,6 +323,15 @@ export const TeacherDashboardPage: React.FC = () => {
 
   const fetchDashboard = useCallback(async (authToken: string) => {
     if (!authToken) return;
+    if (authToken === STANDALONE_MODE_TOKEN) {
+      setStandaloneMode(true);
+      setStudents(buildLocalFallbackStudents());
+      setSheetsConfig(loadLocalSheetsConfig());
+      setGasConfigured(false);
+      setDataError('');
+      return;
+    }
+
     setLoadingData(true);
     setDataError('');
     try {
@@ -198,34 +342,45 @@ export const TeacherDashboardPage: React.FC = () => {
       if (resp.status === 401) {
         safeRemoveToken();
         setToken('');
+        setStandaloneMode(false);
         setAuthError('Sesi guru berakhir. Silakan masuk kembali.');
         return;
       }
-      const rawText = await resp.text();
-      let data: {
+      const { parsed } = await safeParseJsonResponse<{
         ok?: boolean;
         gasConfigured?: boolean;
         sheetsConfig?: SheetsLinkConfig;
         students?: TeacherStudentRecord[];
         error?: string;
-      } = {};
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        setDataError(`Respons server tidak valid (HTTP ${resp.status}). Muat ulang halaman lalu coba lagi.`);
+      }>(resp);
+
+      if (!parsed || typeof parsed.ok !== 'boolean') {
+        // Backend API not responding with JSON (e.g. static deploy) -> gracefully show local + Sheets direct mode
+        setStandaloneMode(true);
+        setStudents(buildLocalFallbackStudents());
+        setSheetsConfig(loadLocalSheetsConfig());
+        setDataError('');
         return;
       }
-      if (!resp.ok || !data.ok) {
-        setDataError(data.error || 'Gagal memuat data kelas.');
+      if (!resp.ok || !parsed.ok) {
+        setDataError(parsed.error || 'Gagal memuat data kelas.');
         return;
       }
-      setStudents(data.students || []);
-      setGasConfigured(Boolean(data.gasConfigured));
-      if (data.sheetsConfig) {
-        setSheetsConfig(data.sheetsConfig);
+      setStandaloneMode(false);
+      setStudents(parsed.students || []);
+      setGasConfigured(Boolean(parsed.gasConfigured));
+      if (parsed.sheetsConfig) {
+        setSheetsConfig(parsed.sheetsConfig);
+        try {
+          localStorage.setItem(LOCAL_SHEETS_CONFIG_KEY, JSON.stringify(parsed.sheetsConfig));
+        } catch {
+          // ignore
+        }
       }
-    } catch (err) {
-      setDataError(err instanceof Error ? err.message : 'Gagal menghubungi server.');
+    } catch {
+      setStandaloneMode(true);
+      setStudents(buildLocalFallbackStudents());
+      setSheetsConfig(loadLocalSheetsConfig());
     } finally {
       setLoadingData(false);
     }
@@ -241,30 +396,57 @@ export const TeacherDashboardPage: React.FC = () => {
     e.preventDefault();
     setAuthError('');
     setAuthLoading(true);
+    const trimmedPin = pinInput.trim();
+    const fallbackPin =
+      String((import.meta.env as Record<string, string | undefined>).VITE_TEACHER_ACCESS_PIN || '').trim() ||
+      'SMK-SPLTV-2026';
+
+    const tryStandaloneFallback = (reason: string) => {
+      if (trimmedPin && trimmedPin === fallbackPin) {
+        safeSetToken(STANDALONE_MODE_TOKEN);
+        setStandaloneMode(true);
+        setToken(STANDALONE_MODE_TOKEN);
+        setPinInput('');
+        return;
+      }
+      setAuthError(
+        `${reason} Untuk masuk dalam Mode Mandiri (Google Sheets Langsung), masukkan PIN: ${fallbackPin}.`
+      );
+    };
+
     try {
       const resp = await fetch('/api/teacher/login', {
         method: 'POST',
         credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: pinInput.trim() }),
+        body: JSON.stringify({ pin: trimmedPin }),
       });
-      const rawText = await resp.text();
-      let data: { ok?: boolean; token?: string; error?: string } = {};
-      try {
-        data = rawText ? JSON.parse(rawText) : {};
-      } catch {
-        setAuthError(`Server mengembalikan respons non-JSON (HTTP ${resp.status}). Silakan muat ulang halaman.`);
+
+      const { parsed } = await safeParseJsonResponse<{
+        ok?: boolean;
+        token?: string;
+        error?: string;
+      }>(resp);
+
+      // If server did NOT return valid backend JSON (e.g. empty body / 404 / 405 / HTML from static deploy)
+      if (!parsed || typeof parsed.ok !== 'boolean') {
+        tryStandaloneFallback(
+          `Server API tidak merespons JSON pada URL ini (HTTP ${resp.status}).`
+        );
         return;
       }
-      if (!resp.ok || !data.ok || !data.token) {
-        setAuthError(data.error || 'PIN tidak valid.');
+
+      if (!resp.ok || !parsed.ok || !parsed.token) {
+        setAuthError(parsed.error || 'PIN tidak valid.');
         return;
       }
-      safeSetToken(data.token);
-      setToken(data.token);
+
+      safeSetToken(parsed.token);
+      setStandaloneMode(false);
+      setToken(parsed.token);
       setPinInput('');
-    } catch (err) {
-      setAuthError(err instanceof Error ? err.message : 'Gagal menghubungi server autentikasi.');
+    } catch {
+      tryStandaloneFallback('Tidak dapat terhubung ke server API.');
     } finally {
       setAuthLoading(false);
     }
@@ -273,6 +455,7 @@ export const TeacherDashboardPage: React.FC = () => {
   const handleLogout = () => {
     safeRemoveToken();
     setToken('');
+    setStandaloneMode(false);
     setStudents([]);
   };
 
@@ -455,6 +638,15 @@ export const TeacherDashboardPage: React.FC = () => {
   }, [filteredStudents]);
 
   const handleSaveNote = async (studentId: string) => {
+    if (standaloneMode || token === STANDALONE_MODE_TOKEN) {
+      setStudents((prev) =>
+        prev.map((s) =>
+          s.studentId === studentId ? { ...s, lkpd: { ...s.lkpd, catatanGuru: noteText.trim() } } : s
+        )
+      );
+      setEditingNoteId(null);
+      return;
+    }
     setSavingNote(true);
     try {
       const resp = await fetch('/api/teacher/lkpd-note', {
@@ -466,19 +658,32 @@ export const TeacherDashboardPage: React.FC = () => {
         },
         body: JSON.stringify({ studentId, catatanGuru: noteText }),
       });
-      const data = (await resp.json()) as { ok?: boolean; student?: TeacherStudentRecord; error?: string };
-      if (resp.ok && data.ok && data.student) {
-        setStudents((prev) => prev.map((s) => (s.studentId === studentId ? data.student! : s)));
+      const { parsed } = await safeParseJsonResponse<{
+        ok?: boolean;
+        student?: TeacherStudentRecord;
+        error?: string;
+      }>(resp);
+      if (resp.ok && parsed?.ok && parsed.student) {
+        setStudents((prev) => prev.map((s) => (s.studentId === studentId ? parsed.student! : s)));
         setEditingNoteId(null);
       } else {
-        setDataError(data.error || 'Gagal menyimpan catatan guru.');
+        setDataError(parsed?.error || `Gagal menyimpan catatan guru (HTTP ${resp.status}).`);
       }
+    } catch (err) {
+      setDataError(err instanceof Error ? err.message : 'Gagal menghubungi server.');
     } finally {
       setSavingNote(false);
     }
   };
 
   const handleSaveGasConfig = async (testOnly: boolean) => {
+    if (standaloneMode || token === STANDALONE_MODE_TOKEN) {
+      setGasMsg({
+        ok: false,
+        text: 'Konfigurasi Apps Script membutuhkan server API aktif. Gunakan panel Koneksi Langsung Google Sheets di atas.',
+      });
+      return;
+    }
     setGasBusy(true);
     setGasMsg(null);
     try {
@@ -491,18 +696,21 @@ export const TeacherDashboardPage: React.FC = () => {
         },
         body: JSON.stringify({ endpointUrl: gasUrlInput.trim(), testOnly }),
       });
-      const data = (await resp.json()) as {
+      const { parsed } = await safeParseJsonResponse<{
         ok?: boolean;
         gasConfigured?: boolean;
         message?: string;
         error?: string;
-      };
-      if (!resp.ok || !data.ok) {
-        setGasMsg({ ok: false, text: data.error || data.message || 'Gagal menguji koneksi GAS.' });
+      }>(resp);
+      if (!resp.ok || !parsed?.ok) {
+        setGasMsg({
+          ok: false,
+          text: parsed?.error || parsed?.message || `Gagal menguji koneksi GAS (HTTP ${resp.status}).`,
+        });
         return;
       }
-      setGasConfigured(Boolean(data.gasConfigured));
-      setGasMsg({ ok: true, text: data.message || 'Konfigurasi berhasil diperiksa.' });
+      setGasConfigured(Boolean(parsed.gasConfigured));
+      setGasMsg({ ok: true, text: parsed.message || 'Konfigurasi berhasil diperiksa.' });
     } catch (err) {
       setGasMsg({
         ok: false,
@@ -790,6 +998,24 @@ export const TeacherDashboardPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {standaloneMode && (
+        <div className="no-print p-3.5 rounded-xl bg-sky-50 border border-sky-200 text-xs text-navy-900 flex flex-wrap items-center justify-between gap-3">
+          <div className="flex items-start gap-2.5">
+            <AlertCircle className="w-4 h-4 text-sky-700 shrink-0 mt-0.5" />
+            <span>
+              <strong>Mode Mandiri Aktif:</strong> Endpoint server API tidak merespons pada URL deploy ini. Anda tetap dapat mengelola rekap lokal dan menyinkronkan data langsung ke Google Sheets melalui tab <strong>Integrasi Google Sheets</strong>.
+            </span>
+          </div>
+          <button
+            type="button"
+            onClick={() => setActiveTab('sheets')}
+            className="px-3 py-1.5 bg-teal-600 hover:bg-teal-500 text-white font-semibold rounded-lg shrink-0"
+          >
+            Buka Integrasi Google Sheets
+          </button>
+        </div>
+      )}
 
       {/* Tab Switcher */}
       <div className="no-print flex flex-wrap gap-2 border-b border-slate-200 pb-3">

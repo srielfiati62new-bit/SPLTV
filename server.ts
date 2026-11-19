@@ -705,6 +705,21 @@ async function startServer() {
     }
   });
 
+  // Ensure unmatched /api/* endpoints always return JSON (never empty body or HTML)
+  app.use('/api', (_req, res) => {
+    res.status(404).json({ ok: false, error: 'Endpoint API tidak ditemukan.' });
+  });
+
+  // Global JSON error handler for malformed JSON payloads or unexpected API errors
+  app.use((err: unknown, req: Request, res: Response, next: NextFunction) => {
+    if (req.path.startsWith('/api')) {
+      const msg = err instanceof Error ? err.message : 'Terjadi kesalahan internal server.';
+      res.status(400).json({ ok: false, error: msg });
+      return;
+    }
+    next(err);
+  });
+
   // Serve Vite middlewares in development or static dist in production
   const distPath = path.resolve(__dirname, 'dist');
   const hasBuiltDist = fs.existsSync(path.join(distPath, 'index.html'));
