@@ -8,6 +8,8 @@ import {
   Copy,
   Database,
   Download,
+  Eye,
+  EyeOff,
   FileSpreadsheet,
   KeyRound,
   Lock,
@@ -42,6 +44,30 @@ import { solveSpltv } from '../utils/spltvSolver';
 import { evaluateQuestionCorrectness, NAV_ITEMS } from '../utils/storage';
 
 const TOKEN_STORAGE_KEY = 'spltv_teacher_session_token_v1';
+
+function safeGetToken(): string {
+  try {
+    return sessionStorage.getItem(TOKEN_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function safeSetToken(val: string) {
+  try {
+    sessionStorage.setItem(TOKEN_STORAGE_KEY, val);
+  } catch {
+    // Ignore storage quota/iframe restrictions; token remains in React state
+  }
+}
+
+function safeRemoveToken() {
+  try {
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+  } catch {
+    // Ignore
+  }
+}
 
 interface TeacherStudentRecord extends StudentExportRow {
   refleksi: {
@@ -123,8 +149,9 @@ const INSTALL_STEPS = [
 ];
 
 export const TeacherDashboardPage: React.FC = () => {
-  const [token, setToken] = useState<string>(() => sessionStorage.getItem(TOKEN_STORAGE_KEY) || '');
+  const [token, setToken] = useState<string>(() => safeGetToken());
   const [pinInput, setPinInput] = useState('');
+  const [showPin, setShowPin] = useState(false);
   const [authError, setAuthError] = useState('');
   const [authLoading, setAuthLoading] = useState(false);
 
@@ -165,21 +192,29 @@ export const TeacherDashboardPage: React.FC = () => {
     setDataError('');
     try {
       const resp = await fetch('/api/teacher/dashboard', {
-        headers: { Authorization: `Bearer ${authToken}` },
+        credentials: 'same-origin',
+        headers: { 'X-Teacher-Token': authToken },
       });
       if (resp.status === 401) {
-        sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+        safeRemoveToken();
         setToken('');
         setAuthError('Sesi guru berakhir. Silakan masuk kembali.');
         return;
       }
-      const data = (await resp.json()) as {
+      const rawText = await resp.text();
+      let data: {
         ok?: boolean;
         gasConfigured?: boolean;
         sheetsConfig?: SheetsLinkConfig;
         students?: TeacherStudentRecord[];
         error?: string;
-      };
+      } = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        setDataError(`Respons server tidak valid (HTTP ${resp.status}). Muat ulang halaman lalu coba lagi.`);
+        return;
+      }
       if (!resp.ok || !data.ok) {
         setDataError(data.error || 'Gagal memuat data kelas.');
         return;
@@ -209,15 +244,23 @@ export const TeacherDashboardPage: React.FC = () => {
     try {
       const resp = await fetch('/api/teacher/login', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ pin: pinInput }),
+        body: JSON.stringify({ pin: pinInput.trim() }),
       });
-      const data = (await resp.json()) as { ok?: boolean; token?: string; error?: string };
+      const rawText = await resp.text();
+      let data: { ok?: boolean; token?: string; error?: string } = {};
+      try {
+        data = rawText ? JSON.parse(rawText) : {};
+      } catch {
+        setAuthError(`Server mengembalikan respons non-JSON (HTTP ${resp.status}). Silakan muat ulang halaman.`);
+        return;
+      }
       if (!resp.ok || !data.ok || !data.token) {
         setAuthError(data.error || 'PIN tidak valid.');
         return;
       }
-      sessionStorage.setItem(TOKEN_STORAGE_KEY, data.token);
+      safeSetToken(data.token);
       setToken(data.token);
       setPinInput('');
     } catch (err) {
@@ -228,7 +271,7 @@ export const TeacherDashboardPage: React.FC = () => {
   };
 
   const handleLogout = () => {
-    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    safeRemoveToken();
     setToken('');
     setStudents([]);
   };
@@ -416,9 +459,10 @@ export const TeacherDashboardPage: React.FC = () => {
     try {
       const resp = await fetch('/api/teacher/lkpd-note', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          'X-Teacher-Token': token,
         },
         body: JSON.stringify({ studentId, catatanGuru: noteText }),
       });
@@ -440,9 +484,10 @@ export const TeacherDashboardPage: React.FC = () => {
     try {
       const resp = await fetch('/api/teacher/gas-config', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${token}`,
+          'X-Teacher-Token': token,
         },
         body: JSON.stringify({ endpointUrl: gasUrlInput.trim(), testOnly }),
       });
@@ -570,10 +615,11 @@ export const TeacherDashboardPage: React.FC = () => {
 
     // 6. Server Health & Input Validation Check (no student data pollution)
     try {
-      const healthResp = await fetch('/api/health');
+      const healthResp = await fetch('/api/health', { credentials: 'same-origin' });
       const healthOk = healthResp.ok;
       const rejectResp = await fetch('/api/sync', {
         method: 'POST',
+        credentials: 'same-origin',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ nama: '', kelas: '', nomorAbsen: '', activityType: 'identitas' }),
       });
@@ -597,11 +643,11 @@ export const TeacherDashboardPage: React.FC = () => {
 
     // 7. Proteksi Endpoint Guru
     try {
-      const unauthResp = await fetch('/api/teacher/dashboard');
+      const unauthResp = await fetch('/api/teacher/dashboard', { credentials: 'same-origin' });
       items.push({
         id: 'audit-auth',
         category: 'Keamanan Dashboard Guru',
-        name: 'Proteksi Token Bearer pada /api/teacher/dashboard',
+        name: 'Proteksi Token Guru (X-Teacher-Token) pada /api/teacher/dashboard',
         status: unauthResp.status === 401 ? 'passed' : 'failed',
         detail: `Permintaan tanpa token ditolak server dengan status HTTP ${unauthResp.status}.`,
       });
@@ -609,7 +655,7 @@ export const TeacherDashboardPage: React.FC = () => {
       items.push({
         id: 'audit-auth',
         category: 'Keamanan Dashboard Guru',
-        name: 'Proteksi Token Bearer pada /api/teacher/dashboard',
+        name: 'Proteksi Token Guru (X-Teacher-Token) pada /api/teacher/dashboard',
         status: 'failed',
         detail: err instanceof Error ? err.message : 'Gagal memeriksa proteksi auth.',
       });
@@ -655,16 +701,24 @@ export const TeacherDashboardPage: React.FC = () => {
                 <KeyRound className="w-4 h-4 text-slate-400 absolute left-3.5 top-1/2 -translate-y-1/2" />
                 <input
                   id="teacher-pin"
-                  type="password"
+                  type={showPin ? 'text' : 'password'}
                   required
                   value={pinInput}
                   onChange={(e) => setPinInput(e.target.value)}
                   placeholder="Masukkan PIN Guru"
-                  className="w-full pl-10 pr-4 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
+                  className="w-full pl-10 pr-11 py-2.5 rounded-xl border border-slate-300 text-sm focus:outline-none focus:ring-2 focus:ring-sky-400"
                 />
+                <button
+                  type="button"
+                  onClick={() => setShowPin((prev) => !prev)}
+                  aria-label={showPin ? 'Sembunyikan PIN' : 'Tampilkan PIN'}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-navy-900 p-1"
+                >
+                  {showPin ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
               </div>
               <p className="text-xs text-slate-500 mt-1.5">
-                Gunakan PIN sesuai variabel server <code className="font-mono">TEACHER_ACCESS_PIN</code> (default pengembangan: <code className="font-mono font-semibold text-navy-900">SMK-SPLTV-2026</code>).
+                Gunakan PIN yang Anda atur pada variabel <code className="font-mono">TEACHER_ACCESS_PIN</code> (jika belum diatur, gunakan PIN bawaan: <code className="font-mono font-semibold text-navy-900">SMK-SPLTV-2026</code>).
               </p>
             </div>
 

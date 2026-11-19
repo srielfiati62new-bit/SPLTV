@@ -101,7 +101,7 @@ export async function checkBackendHealth(): Promise<{
   spreadsheetUrl: string;
 }> {
   try {
-    const resp = await fetch('/api/health');
+    const resp = await fetch('/api/health', { credentials: 'same-origin' });
     if (!resp.ok) {
       return {
         ok: false,
@@ -149,6 +149,7 @@ async function sendItemToServer(item: SyncQueueItem): Promise<{
   try {
     const resp = await fetch('/api/sync', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         nama: item.nama,

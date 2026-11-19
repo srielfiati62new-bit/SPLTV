@@ -3,6 +3,7 @@ import dotenv from 'dotenv';
 import express from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import fs from 'fs';
+import os from 'os';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -12,10 +13,42 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const PORT = Number(process.env.PORT || 3000);
-const DATA_DIR = path.resolve(__dirname, '.data');
+
+function stripQuotes(val: string | undefined): string {
+  const s = String(val || '').trim();
+  if ((s.startsWith('"') && s.endsWith('"')) || (s.startsWith("'") && s.endsWith("'"))) {
+    return s.slice(1, -1).trim();
+  }
+  return s;
+}
+
+function resolveWritableDataDir(): string {
+  const candidates = [
+    path.resolve(__dirname, '.data'),
+    path.join(os.tmpdir(), 'spltv-smart-learning-data'),
+  ];
+  for (const dir of candidates) {
+    try {
+      if (!fs.existsSync(dir)) {
+        fs.mkdirSync(dir, { recursive: true });
+      }
+      fs.accessSync(dir, fs.constants.W_OK);
+      return dir;
+    } catch {
+      // Try next candidate
+    }
+  }
+  return path.join(os.tmpdir(), 'spltv-smart-learning-data');
+}
+
+const DATA_DIR = resolveWritableDataDir();
 const DB_FILE = path.resolve(DATA_DIR, 'spltv_records.json');
 const CONFIG_FILE = path.resolve(DATA_DIR, 'gas_config.json');
 const SHEETS_CONFIG_FILE = path.resolve(DATA_DIR, 'sheets_config.json');
+
+let memoryRecords: Record<string, StudentServerRecord> = {};
+let memoryGasUrl = '';
+let memorySheetsConfig: SheetsLinkConfig | null = null;
 
 const TOKEN_SECRET =
   process.env.TEACHER_TOKEN_SECRET || crypto.createHash('sha256').update('spltv-smk-fase-e-secret').digest('hex');
@@ -84,58 +117,75 @@ interface SheetsLinkConfig {
 }
 
 function ensureDataDir() {
-  if (!fs.existsSync(DATA_DIR)) {
-    fs.mkdirSync(DATA_DIR, { recursive: true });
+  try {
+    if (!fs.existsSync(DATA_DIR)) {
+      fs.mkdirSync(DATA_DIR, { recursive: true });
+    }
+  } catch {
+    // Fallback handled by in-memory cache
   }
 }
 
 function readRecords(): Record<string, StudentServerRecord> {
   ensureDataDir();
-  if (!fs.existsSync(DB_FILE)) return {};
   try {
-    return JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as Record<string, StudentServerRecord>;
+    if (fs.existsSync(DB_FILE)) {
+      const parsed = JSON.parse(fs.readFileSync(DB_FILE, 'utf-8')) as Record<string, StudentServerRecord>;
+      memoryRecords = parsed;
+      return parsed;
+    }
   } catch {
-    return {};
+    // Fall back to in-memory records
   }
+  return { ...memoryRecords };
 }
 
 function writeRecords(records: Record<string, StudentServerRecord>) {
+  memoryRecords = { ...records };
   ensureDataDir();
-  fs.writeFileSync(DB_FILE, JSON.stringify(records, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(DB_FILE, JSON.stringify(records, null, 2), 'utf-8');
+  } catch {
+    // Keep in-memory records if filesystem is read-only
+  }
 }
 
 function getEffectiveGasUrl(): string {
-  if (process.env.GAS_ENDPOINT_URL && process.env.GAS_ENDPOINT_URL.trim()) {
-    return process.env.GAS_ENDPOINT_URL.trim();
-  }
+  const envUrl = stripQuotes(process.env.GAS_ENDPOINT_URL);
+  if (envUrl) return envUrl;
   ensureDataDir();
-  if (fs.existsSync(CONFIG_FILE)) {
-    try {
+  try {
+    if (fs.existsSync(CONFIG_FILE)) {
       const cfg = JSON.parse(fs.readFileSync(CONFIG_FILE, 'utf-8')) as GasRuntimeConfig;
       return (cfg.endpointUrl || '').trim();
-    } catch {
-      return '';
     }
+  } catch {
+    // ignore
   }
-  return '';
+  return memoryGasUrl;
 }
 
 function saveRuntimeGasUrl(url: string) {
+  memoryGasUrl = url.trim();
   ensureDataDir();
-  fs.writeFileSync(CONFIG_FILE, JSON.stringify({ endpointUrl: url.trim() }, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(CONFIG_FILE, JSON.stringify({ endpointUrl: memoryGasUrl }, null, 2), 'utf-8');
+  } catch {
+    // ignore
+  }
 }
 
 function getEffectiveSheetsConfig(): SheetsLinkConfig {
   ensureDataDir();
-  let fileCfg: Partial<SheetsLinkConfig> = {};
-  if (fs.existsSync(SHEETS_CONFIG_FILE)) {
-    try {
+  let fileCfg: Partial<SheetsLinkConfig> = memorySheetsConfig ? { ...memorySheetsConfig } : {};
+  try {
+    if (fs.existsSync(SHEETS_CONFIG_FILE)) {
       fileCfg = JSON.parse(fs.readFileSync(SHEETS_CONFIG_FILE, 'utf-8')) as Partial<SheetsLinkConfig>;
-    } catch {
-      fileCfg = {};
     }
+  } catch {
+    // ignore
   }
-  const spreadsheetId = (fileCfg.spreadsheetId || process.env.GOOGLE_SPREADSHEET_ID || '').trim();
+  const spreadsheetId = (fileCfg.spreadsheetId || stripQuotes(process.env.GOOGLE_SPREADSHEET_ID)).trim();
   const spreadsheetUrl =
     (fileCfg.spreadsheetUrl || '').trim() ||
     (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : '');
@@ -168,8 +218,13 @@ function saveRuntimeSheetsConfig(cfg: Partial<SheetsLinkConfig>): SheetsLinkConf
     lastSyncedAt:
       cfg.lastSyncedAt !== undefined ? cfg.lastSyncedAt : spreadsheetId ? current.lastSyncedAt : null,
   };
+  memorySheetsConfig = next;
   ensureDataDir();
-  fs.writeFileSync(SHEETS_CONFIG_FILE, JSON.stringify(next, null, 2), 'utf-8');
+  try {
+    fs.writeFileSync(SHEETS_CONFIG_FILE, JSON.stringify(next, null, 2), 'utf-8');
+  } catch {
+    // ignore
+  }
   return next;
 }
 
@@ -214,8 +269,11 @@ function verifyTeacherToken(token: string): boolean {
 }
 
 function requireTeacherAuth(req: Request, res: Response, next: NextFunction) {
+  const customHeader = req.headers['x-teacher-token'];
+  const headerToken = Array.isArray(customHeader) ? customHeader[0] : customHeader;
   const auth = req.headers.authorization || '';
-  const token = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const bearerToken = auth.startsWith('Bearer ') ? auth.slice(7) : '';
+  const token = String(headerToken || bearerToken || '').trim();
   if (!verifyTeacherToken(token)) {
     res.status(401).json({ ok: false, error: 'Akses ditolak. Silakan login sebagai guru terlebih dahulu.' });
     return;
@@ -522,9 +580,15 @@ async function startServer() {
   // 3. Teacher Authentication
   app.post('/api/teacher/login', (req, res) => {
     const pin = String((req.body as { pin?: string })?.pin || '').trim();
-    const expectedPin = (process.env.TEACHER_ACCESS_PIN || 'SMK-SPLTV-2026').trim();
+    const customEnvPin = stripQuotes(process.env.TEACHER_ACCESS_PIN);
+    const expectedPin = customEnvPin || 'SMK-SPLTV-2026';
     if (!pin || pin !== expectedPin) {
-      res.status(401).json({ ok: false, error: 'PIN Guru tidak valid.' });
+      res.status(401).json({
+        ok: false,
+        error: customEnvPin
+          ? 'PIN Guru tidak cocok dengan variabel TEACHER_ACCESS_PIN yang aktif di server. Periksa huruf besar/kecil atau spasi.'
+          : 'PIN Guru tidak valid. Gunakan PIN default SMK-SPLTV-2026 atau atur variabel TEACHER_ACCESS_PIN.',
+      });
       return;
     }
     const token = issueTeacherToken();
@@ -642,7 +706,13 @@ async function startServer() {
   });
 
   // Serve Vite middlewares in development or static dist in production
-  if (process.env.NODE_ENV !== 'production') {
+  const distPath = path.resolve(__dirname, 'dist');
+  const hasBuiltDist = fs.existsSync(path.join(distPath, 'index.html'));
+  const isProd =
+    process.env.NODE_ENV === 'production' ||
+    (hasBuiltDist && process.env.npm_lifecycle_event !== 'dev');
+
+  if (!isProd) {
     const { createServer: createViteServer } = await import('vite');
     const vite = await createViteServer({
       server: { middlewareMode: true },
@@ -650,7 +720,6 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.resolve(__dirname, 'dist');
     app.use(express.static(distPath));
     app.get('*', (_req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));

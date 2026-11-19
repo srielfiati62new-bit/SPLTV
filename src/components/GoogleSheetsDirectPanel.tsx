@@ -93,9 +93,10 @@ export const GoogleSheetsDirectPanel: React.FC<GoogleSheetsDirectPanelProps> = (
   const persistServerSheetsConfig = async (cfg: Partial<SheetsLinkConfig>) => {
     const resp = await fetch('/api/teacher/sheets-config', {
       method: 'POST',
+      credentials: 'same-origin',
       headers: {
         'Content-Type': 'application/json',
-        Authorization: `Bearer ${teacherToken}`,
+        'X-Teacher-Token': teacherToken,
       },
       body: JSON.stringify(cfg),
     });
