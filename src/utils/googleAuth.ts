@@ -42,6 +42,8 @@ export const initAuth = (
   });
 };
 
+export const FIREBASE_PROJECT_ID = firebaseConfig.projectId || '';
+
 export const googleSignIn = async (): Promise<{ user: User; accessToken: string }> => {
   try {
     isSigningIn = true;
@@ -53,6 +55,25 @@ export const googleSignIn = async (): Promise<{ user: User; accessToken: string 
     cachedAccessToken = credential.accessToken;
     cachedUser = result.user;
     return { user: result.user, accessToken: cachedAccessToken };
+  } catch (err: unknown) {
+    const code = (err as { code?: string })?.code || '';
+    const msg = err instanceof Error ? err.message : String(err || '');
+    if (code === 'auth/unauthorized-domain' || msg.includes('auth/unauthorized-domain')) {
+      const host = typeof window !== 'undefined' ? window.location.hostname : '';
+      const friendly = new Error(
+        `Domain "${host}" belum terdaftar di Authorized Domains Firebase (${FIREBASE_PROJECT_ID}). Tambahkan domain ini di Firebase Console → Authentication → Settings → Authorized domains, lalu coba Sign in with Google kembali.`
+      ) as Error & { code?: string; unauthorizedHost?: string };
+      friendly.code = 'auth/unauthorized-domain';
+      friendly.unauthorizedHost = host;
+      throw friendly;
+    }
+    if (code === 'auth/popup-closed-by-user') {
+      throw new Error('Jendela login Google ditutup sebelum proses selesai. Silakan coba lagi.');
+    }
+    if (code === 'auth/popup-blocked') {
+      throw new Error('Popup login Google diblokir oleh browser. Izinkan popup untuk situs ini lalu coba lagi.');
+    }
+    throw err;
   } finally {
     isSigningIn = false;
   }

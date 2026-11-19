@@ -3,6 +3,7 @@ import type { User } from 'firebase/auth';
 import {
   AlertTriangle,
   CheckCircle2,
+  Copy,
   ExternalLink,
   FilePlus2,
   FileSpreadsheet,
@@ -14,6 +15,7 @@ import {
   XCircle,
 } from 'lucide-react';
 import {
+  FIREBASE_PROJECT_ID,
   getAccessToken,
   googleLogout,
   googleSignIn,
@@ -68,6 +70,8 @@ export const GoogleSheetsDirectPanel: React.FC<GoogleSheetsDirectPanelProps> = (
 
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ ok: boolean; text: string } | null>(null);
+  const [unauthorizedHost, setUnauthorizedHost] = useState<string | null>(null);
+  const [copiedHost, setCopiedHost] = useState(false);
   const [confirmModal, setConfirmModal] = useState<ConfirmAction | null>(null);
 
   useEffect(() => {
@@ -140,6 +144,7 @@ export const GoogleSheetsDirectPanel: React.FC<GoogleSheetsDirectPanelProps> = (
   const handleGoogleSignIn = async () => {
     setAuthBusy(true);
     setFeedback(null);
+    setUnauthorizedHost(null);
     try {
       const res = await googleSignIn();
       setGoogleUser(res.user);
@@ -149,12 +154,32 @@ export const GoogleSheetsDirectPanel: React.FC<GoogleSheetsDirectPanelProps> = (
         text: `Berhasil terhubung dengan akun Google (${res.user.email || res.user.displayName || 'Aktif'}).`,
       });
     } catch (err) {
+      const typedErr = err as Error & { code?: string; unauthorizedHost?: string };
+      if (
+        typedErr?.code === 'auth/unauthorized-domain' ||
+        (typedErr?.message || '').includes('auth/unauthorized-domain')
+      ) {
+        setUnauthorizedHost(
+          typedErr.unauthorizedHost || (typeof window !== 'undefined' ? window.location.hostname : '')
+        );
+      }
       setFeedback({
         ok: false,
         text: err instanceof Error ? err.message : 'Gagal masuk dengan Google.',
       });
     } finally {
       setAuthBusy(false);
+    }
+  };
+
+  const handleCopyHost = async () => {
+    if (!unauthorizedHost) return;
+    try {
+      await navigator.clipboard.writeText(unauthorizedHost);
+      setCopiedHost(true);
+      setTimeout(() => setCopiedHost(false), 2500);
+    } catch {
+      setCopiedHost(false);
     }
   };
 
@@ -384,6 +409,62 @@ export const GoogleSheetsDirectPanel: React.FC<GoogleSheetsDirectPanelProps> = (
             <XCircle className="w-4 h-4 shrink-0" />
           )}
           <span>{feedback.text}</span>
+        </div>
+      )}
+
+      {/* Guided Helper for Firebase auth/unauthorized-domain on Deployed URLs */}
+      {unauthorizedHost && (
+        <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 space-y-3 text-xs text-amber-950">
+          <div className="flex items-start gap-2.5">
+            <AlertTriangle className="w-4 h-4 text-amber-700 shrink-0 mt-0.5" />
+            <div className="space-y-1">
+              <p className="font-bold text-amber-950">
+                Langkah Cepat Mengizinkan Domain Hasil Deploy di Firebase (1 Menit)
+              </p>
+              <p className="text-amber-900">
+                Firebase Authentication memblokir login Google dari domain baru hasil deploy sampai domain tersebut ditambahkan ke daftar <strong>Authorized domains</strong> (tidak perlu deploy ulang setelah ditambahkan).
+              </p>
+            </div>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2 bg-white border border-amber-200 rounded-lg p-2.5">
+            <span className="text-slate-500">Domain saat ini:</span>
+            <code className="font-mono font-bold text-navy-900 break-all">{unauthorizedHost}</code>
+            <button
+              type="button"
+              onClick={() => void handleCopyHost()}
+              className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 bg-slate-100 hover:bg-slate-200 text-navy-900 font-semibold rounded-md transition-colors"
+            >
+              <Copy className="w-3.5 h-3.5" />
+              <span>{copiedHost ? 'Tersalin!' : 'Salin Domain'}</span>
+            </button>
+          </div>
+
+          <ol className="list-decimal pl-5 space-y-1 text-amber-900">
+            <li>
+              Buka Firebase Console → <strong>Authentication</strong> → tab <strong>Settings</strong> → <strong>Authorized domains</strong>.
+            </li>
+            <li>
+              Klik tombol <strong>Add domain</strong>, tempelkan domain <code className="font-mono font-semibold">{unauthorizedHost}</code>, lalu klik <strong>Add</strong>.
+            </li>
+            <li>
+              Kembali ke halaman ini lalu klik <strong>Sign in with Google</strong> lagi (langsung berhasil tanpa perlu deploy ulang).
+            </li>
+          </ol>
+
+          {FIREBASE_PROJECT_ID && (
+            <div className="pt-1">
+              <a
+                href={`https://console.firebase.google.com/project/${FIREBASE_PROJECT_ID}/authentication/settings`}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1.5 px-3.5 py-2 bg-navy-900 hover:bg-navy-800 text-white font-semibold rounded-lg transition-colors"
+              >
+                <ExternalLink className="w-3.5 h-3.5 text-sky-300" />
+                <span>Buka Authorized Domains Firebase ({FIREBASE_PROJECT_ID})</span>
+              </a>
+            </div>
+          )}
         </div>
       )}
 
