@@ -58,13 +58,14 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({
 
   const isFailed = syncStatus.state === 'failed' || syncStatus.pendingOrFailedCount > 0;
   const isGas = syncStatus.state === 'synced-gas';
+  const isSheetsLinked = Boolean(syncStatus.sheetsLinked);
 
   return (
     <div
       className={`no-print mb-5 rounded-xl border px-4 py-2.5 flex flex-wrap items-center justify-between gap-3 text-xs ${
         isFailed
           ? 'bg-amber-50 border-amber-200 text-amber-900'
-          : isGas
+          : isGas || isSheetsLinked
             ? 'bg-teal-50/80 border-teal-200 text-teal-900'
             : 'bg-sky-50/80 border-sky-200 text-navy-900'
       }`}
@@ -72,7 +73,7 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({
       <div className="flex items-center gap-2.5 min-w-0">
         {isFailed ? (
           <CloudOff className="w-4 h-4 text-amber-700 shrink-0" />
-        ) : isGas ? (
+        ) : isGas || isSheetsLinked ? (
           <CheckCircle2 className="w-4 h-4 text-teal-700 shrink-0" />
         ) : (
           <Cloud className="w-4 h-4 text-sky-700 shrink-0" />
@@ -83,7 +84,9 @@ export const SyncStatusBar: React.FC<SyncStatusBarProps> = ({
               ? `Sinkronisasi Tertunda (${syncStatus.pendingOrFailedCount} antrean)`
               : isGas
                 ? 'Terhubung Google Sheets via Apps Script'
-                : 'Tersimpan di Server Lokal (GAS Belum Diatur)'}
+                : isSheetsLinked
+                  ? `Terhubung Google Sheets (${syncStatus.spreadsheetTitle || 'Spreadsheet Kelas'})`
+                  : 'Tersimpan di Server Lokal (Hubungkan Google Sheets di Dashboard Guru)'}
           </span>
           <span className="mx-2 text-slate-400">·</span>
           <span className="text-slate-600 tabular-nums">

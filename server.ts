@@ -15,6 +15,7 @@ const PORT = Number(process.env.PORT || 3000);
 const DATA_DIR = path.resolve(__dirname, '.data');
 const DB_FILE = path.resolve(DATA_DIR, 'spltv_records.json');
 const CONFIG_FILE = path.resolve(DATA_DIR, 'gas_config.json');
+const SHEETS_CONFIG_FILE = path.resolve(DATA_DIR, 'sheets_config.json');
 
 const TOKEN_SECRET =
   process.env.TEACHER_TOKEN_SECRET || crypto.createHash('sha256').update('spltv-smk-fase-e-secret').digest('hex');
@@ -75,6 +76,13 @@ interface GasRuntimeConfig {
   endpointUrl: string;
 }
 
+interface SheetsLinkConfig {
+  spreadsheetId: string;
+  spreadsheetTitle: string;
+  spreadsheetUrl: string;
+  lastSyncedAt: string | null;
+}
+
 function ensureDataDir() {
   if (!fs.existsSync(DATA_DIR)) {
     fs.mkdirSync(DATA_DIR, { recursive: true });
@@ -115,6 +123,54 @@ function getEffectiveGasUrl(): string {
 function saveRuntimeGasUrl(url: string) {
   ensureDataDir();
   fs.writeFileSync(CONFIG_FILE, JSON.stringify({ endpointUrl: url.trim() }, null, 2), 'utf-8');
+}
+
+function getEffectiveSheetsConfig(): SheetsLinkConfig {
+  ensureDataDir();
+  let fileCfg: Partial<SheetsLinkConfig> = {};
+  if (fs.existsSync(SHEETS_CONFIG_FILE)) {
+    try {
+      fileCfg = JSON.parse(fs.readFileSync(SHEETS_CONFIG_FILE, 'utf-8')) as Partial<SheetsLinkConfig>;
+    } catch {
+      fileCfg = {};
+    }
+  }
+  const spreadsheetId = (fileCfg.spreadsheetId || process.env.GOOGLE_SPREADSHEET_ID || '').trim();
+  const spreadsheetUrl =
+    (fileCfg.spreadsheetUrl || '').trim() ||
+    (spreadsheetId ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit` : '');
+  return {
+    spreadsheetId,
+    spreadsheetTitle: (fileCfg.spreadsheetTitle || (spreadsheetId ? 'Google Spreadsheet SPLTV' : '')).trim(),
+    spreadsheetUrl,
+    lastSyncedAt: fileCfg.lastSyncedAt || null,
+  };
+}
+
+function saveRuntimeSheetsConfig(cfg: Partial<SheetsLinkConfig>): SheetsLinkConfig {
+  const current = getEffectiveSheetsConfig();
+  const spreadsheetId =
+    cfg.spreadsheetId !== undefined ? cfg.spreadsheetId.trim() : current.spreadsheetId;
+  const next: SheetsLinkConfig = {
+    spreadsheetId,
+    spreadsheetTitle:
+      cfg.spreadsheetTitle !== undefined
+        ? cfg.spreadsheetTitle.trim()
+        : spreadsheetId
+          ? current.spreadsheetTitle || 'Google Spreadsheet SPLTV'
+          : '',
+    spreadsheetUrl:
+      cfg.spreadsheetUrl !== undefined
+        ? cfg.spreadsheetUrl.trim()
+        : spreadsheetId
+          ? `https://docs.google.com/spreadsheets/d/${spreadsheetId}/edit`
+          : '',
+    lastSyncedAt:
+      cfg.lastSyncedAt !== undefined ? cfg.lastSyncedAt : spreadsheetId ? current.lastSyncedAt : null,
+  };
+  ensureDataDir();
+  fs.writeFileSync(SHEETS_CONFIG_FILE, JSON.stringify(next, null, 2), 'utf-8');
+  return next;
 }
 
 function makeStudentId(nama: string, kelas: string, nomorAbsen: string): string {
@@ -212,10 +268,30 @@ async function startServer() {
   // 1. Health & Integration Status (never exposes secret URL to client)
   app.get('/api/health', (_req, res) => {
     const gasConfigured = Boolean(getEffectiveGasUrl());
+    const sheets = getEffectiveSheetsConfig();
+    const sheetsLinked = Boolean(sheets.spreadsheetId);
     res.json({
       ok: true,
       gasConfigured,
-      storageMode: gasConfigured ? 'gas-and-server' : 'server-local',
+      sheetsLinked,
+      spreadsheetId: sheets.spreadsheetId,
+      spreadsheetTitle: sheets.spreadsheetTitle,
+      spreadsheetUrl: sheets.spreadsheetUrl,
+      lastSheetsSyncedAt: sheets.lastSyncedAt,
+      storageMode: sheetsLinked
+        ? 'google-sheets-api'
+        : gasConfigured
+          ? 'gas-and-server'
+          : 'server-local',
+    });
+  });
+
+  app.get('/api/sheets/status', (_req, res) => {
+    const sheets = getEffectiveSheetsConfig();
+    res.json({
+      ok: true,
+      sheetsLinked: Boolean(sheets.spreadsheetId),
+      ...sheets,
     });
   });
 
@@ -460,11 +536,28 @@ async function startServer() {
     const recordsObj = readRecords();
     const students = Object.values(recordsObj).sort((a, b) => a.nama.localeCompare(b.nama));
     const gasUrl = getEffectiveGasUrl();
+    const sheetsConfig = getEffectiveSheetsConfig();
 
     res.json({
       ok: true,
       gasConfigured: Boolean(gasUrl),
+      sheetsConfig,
       students,
+    });
+  });
+
+  // 4b. Protected Teacher Direct Google Sheets Config (non-secret metadata only)
+  app.post('/api/teacher/sheets-config', requireTeacherAuth, (req, res) => {
+    const body = req.body as Partial<SheetsLinkConfig>;
+    const saved = saveRuntimeSheetsConfig({
+      spreadsheetId: body.spreadsheetId,
+      spreadsheetTitle: body.spreadsheetTitle,
+      spreadsheetUrl: body.spreadsheetUrl,
+      lastSyncedAt: body.lastSyncedAt,
+    });
+    res.json({
+      ok: true,
+      sheetsConfig: saved,
     });
   });
 

@@ -38,6 +38,10 @@ export interface SyncStatusSummary {
   lastMessage: string;
   pendingOrFailedCount: number;
   gasConfigured: boolean;
+  sheetsLinked?: boolean;
+  spreadsheetId?: string;
+  spreadsheetTitle?: string;
+  spreadsheetUrl?: string;
 }
 
 export function loadSyncQueue(): SyncQueueItem[] {
@@ -64,6 +68,10 @@ export function loadSyncMeta(): SyncStatusSummary {
       lastMessage: parsed.lastMessage || 'Belum ada data disinkronkan.',
       pendingOrFailedCount: queue.length,
       gasConfigured: Boolean(parsed.gasConfigured),
+      sheetsLinked: Boolean(parsed.sheetsLinked),
+      spreadsheetId: parsed.spreadsheetId || '',
+      spreadsheetTitle: parsed.spreadsheetTitle || '',
+      spreadsheetUrl: parsed.spreadsheetUrl || '',
     };
   } catch {
     return {
@@ -72,6 +80,10 @@ export function loadSyncMeta(): SyncStatusSummary {
       lastMessage: 'Belum ada data disinkronkan.',
       pendingOrFailedCount: queue.length,
       gasConfigured: false,
+      sheetsLinked: false,
+      spreadsheetId: '',
+      spreadsheetTitle: '',
+      spreadsheetUrl: '',
     };
   }
 }
@@ -80,14 +92,51 @@ function saveSyncMeta(meta: SyncStatusSummary) {
   localStorage.setItem(SYNC_META_KEY, JSON.stringify(meta));
 }
 
-export async function checkBackendHealth(): Promise<{ ok: boolean; gasConfigured: boolean }> {
+export async function checkBackendHealth(): Promise<{
+  ok: boolean;
+  gasConfigured: boolean;
+  sheetsLinked: boolean;
+  spreadsheetId: string;
+  spreadsheetTitle: string;
+  spreadsheetUrl: string;
+}> {
   try {
     const resp = await fetch('/api/health');
-    if (!resp.ok) return { ok: false, gasConfigured: false };
-    const data = (await resp.json()) as { ok?: boolean; gasConfigured?: boolean };
-    return { ok: Boolean(data.ok), gasConfigured: Boolean(data.gasConfigured) };
+    if (!resp.ok) {
+      return {
+        ok: false,
+        gasConfigured: false,
+        sheetsLinked: false,
+        spreadsheetId: '',
+        spreadsheetTitle: '',
+        spreadsheetUrl: '',
+      };
+    }
+    const data = (await resp.json()) as {
+      ok?: boolean;
+      gasConfigured?: boolean;
+      sheetsLinked?: boolean;
+      spreadsheetId?: string;
+      spreadsheetTitle?: string;
+      spreadsheetUrl?: string;
+    };
+    return {
+      ok: Boolean(data.ok),
+      gasConfigured: Boolean(data.gasConfigured),
+      sheetsLinked: Boolean(data.sheetsLinked),
+      spreadsheetId: data.spreadsheetId || '',
+      spreadsheetTitle: data.spreadsheetTitle || '',
+      spreadsheetUrl: data.spreadsheetUrl || '',
+    };
   } catch {
-    return { ok: false, gasConfigured: false };
+    return {
+      ok: false,
+      gasConfigured: false,
+      sheetsLinked: false,
+      spreadsheetId: '',
+      spreadsheetTitle: '',
+      spreadsheetUrl: '',
+    };
   }
 }
 
@@ -176,7 +225,9 @@ export async function syncActivity(
   }
 
   saveSyncQueue(queue);
+  const prevMeta = loadSyncMeta();
   const meta: SyncStatusSummary = {
+    ...prevMeta,
     state: result.syncStatus === 'synced-gas' ? 'synced-gas' : 'saved-server',
     lastSyncedAt: result.timestamp || new Date().toISOString(),
     lastMessage: result.message,

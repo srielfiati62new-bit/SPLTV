@@ -22,6 +22,10 @@ import {
   XCircle,
 } from 'lucide-react';
 import gasScriptRaw from '../../google-apps-script/Code.gs?raw';
+import {
+  GoogleSheetsDirectPanel,
+  SheetsLinkConfig,
+} from '../components/GoogleSheetsDirectPanel';
 import { MEETINGS_DATA } from '../data/curriculumData';
 import {
   DIAGNOSTIC_10_QUESTIONS,
@@ -127,6 +131,12 @@ export const TeacherDashboardPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'analytics' | 'sheets' | 'testing'>('analytics');
   const [students, setStudents] = useState<TeacherStudentRecord[]>([]);
   const [gasConfigured, setGasConfigured] = useState(false);
+  const [sheetsConfig, setSheetsConfig] = useState<SheetsLinkConfig>({
+    spreadsheetId: '',
+    spreadsheetTitle: '',
+    spreadsheetUrl: '',
+    lastSyncedAt: null,
+  });
   const [loadingData, setLoadingData] = useState(false);
   const [dataError, setDataError] = useState('');
 
@@ -166,6 +176,7 @@ export const TeacherDashboardPage: React.FC = () => {
       const data = (await resp.json()) as {
         ok?: boolean;
         gasConfigured?: boolean;
+        sheetsConfig?: SheetsLinkConfig;
         students?: TeacherStudentRecord[];
         error?: string;
       };
@@ -175,6 +186,9 @@ export const TeacherDashboardPage: React.FC = () => {
       }
       setStudents(data.students || []);
       setGasConfigured(Boolean(data.gasConfigured));
+      if (data.sheetsConfig) {
+        setSheetsConfig(data.sheetsConfig);
+      }
     } catch (err) {
       setDataError(err instanceof Error ? err.message : 'Gagal menghubungi server.');
     } finally {
@@ -680,10 +694,16 @@ export const TeacherDashboardPage: React.FC = () => {
           </h1>
           <p className="text-sm text-slate-600 mt-1">
             Status Integrasi Sheets:{' '}
-            <strong className={gasConfigured ? 'text-teal-700' : 'text-amber-700'}>
-              {gasConfigured
-                ? 'Endpoint Apps Script Terkonfigurasi'
-                : 'Mode Server Lokal (Endpoint Apps Script Belum Diatur)'}
+            <strong
+              className={
+                sheetsConfig.spreadsheetId || gasConfigured ? 'text-teal-700' : 'text-amber-700'
+              }
+            >
+              {sheetsConfig.spreadsheetId
+                ? `Terhubung Langsung (${sheetsConfig.spreadsheetTitle || sheetsConfig.spreadsheetId})`
+                : gasConfigured
+                  ? 'Endpoint Apps Script Terkonfigurasi'
+                  : 'Belum Terhubung (Buka tab Integrasi Google Sheets)'}
             </strong>
           </p>
         </div>
@@ -754,6 +774,32 @@ export const TeacherDashboardPage: React.FC = () => {
       {/* TAB 1: ANALYTICS, CHARTS, TABLE & CSV EXPORT */}
       {activeTab === 'analytics' && (
         <div className="space-y-6">
+          {/* Quick Google Sheets Sync Shortcut */}
+          <div className="no-print rounded-2xl border border-sky-200 bg-sky-50/70 px-5 py-3.5 flex flex-wrap items-center justify-between gap-3">
+            <div className="flex items-center gap-2.5 text-xs text-navy-900">
+              <FileSpreadsheet className="w-4 h-4 text-teal-700 shrink-0" />
+              <span>
+                {sheetsConfig.spreadsheetId ? (
+                  <>
+                    Terhubung dengan Google Sheets:{' '}
+                    <strong>{sheetsConfig.spreadsheetTitle || sheetsConfig.spreadsheetId}</strong>
+                  </>
+                ) : (
+                  <>
+                    Hubungkan akun Google Anda untuk membuat spreadsheet 7 sheet otomatis dan menyinkronkan data kelas ke Google Sheets.
+                  </>
+                )}
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => setActiveTab('sheets')}
+              className="px-3.5 py-1.5 bg-navy-900 hover:bg-navy-800 text-white text-xs font-semibold rounded-xl transition-colors"
+            >
+              {sheetsConfig.spreadsheetId ? 'Kelola & Sinkronkan Google Sheets' : 'Hubungkan Google Sheets'}
+            </button>
+          </div>
+
           {/* Filters & Export Bar */}
           <div className="no-print bg-white rounded-2xl border border-slate-200 p-4 flex flex-wrap items-center justify-between gap-4">
             <div className="flex flex-wrap items-center gap-3 flex-1 min-w-[260px]">
@@ -1143,12 +1189,20 @@ export const TeacherDashboardPage: React.FC = () => {
       {/* TAB 2: GOOGLE SHEETS & APPS SCRIPT */}
       {activeTab === 'sheets' && (
         <div className="space-y-6">
-          {/* Runtime Backend Configurator */}
+          {/* Primary Direct Google Sheets API Integration */}
+          <GoogleSheetsDirectPanel
+            teacherToken={token}
+            students={students}
+            sheetsConfig={sheetsConfig}
+            onSheetsConfigUpdated={setSheetsConfig}
+          />
+
+          {/* Alternative Option: Google Apps Script Backend Configurator */}
           <section className="bg-white rounded-2xl border border-slate-200 p-6 space-y-4">
             <div className="flex items-center gap-2.5">
-              <Server className="w-5 h-5 text-teal-700" />
-              <h2 className="font-display text-lg font-bold text-navy-900">
-                Konfigurasi Endpoint Google Apps Script (Sisi Server)
+              <Server className="w-5 h-5 text-slate-600" />
+              <h2 className="font-display text-base font-bold text-navy-900">
+                Opsi Alternatif: Endpoint Google Apps Script (Sisi Server)
               </h2>
             </div>
             <p className="text-sm text-slate-600">

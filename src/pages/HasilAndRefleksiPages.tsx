@@ -195,11 +195,13 @@ export const HasilBelajarPage: React.FC<HasilBelajarPageProps> = ({
               <strong className="text-navy-900">
                 {syncStatus.state === 'synced-gas'
                   ? 'Tersinkron ke Google Sheets & Server'
-                  : syncStatus.state === 'saved-server'
-                    ? 'Tersimpan Tervalidasi di Server Aplikasi'
-                    : syncStatus.state === 'failed'
-                      ? 'Menunggu Sinkronisasi Ulang'
-                      : 'Tersimpan di Perangkat'}
+                  : syncStatus.sheetsLinked
+                    ? `Terhubung Google Sheets (${syncStatus.spreadsheetTitle || 'Spreadsheet Kelas'})`
+                    : syncStatus.state === 'saved-server'
+                      ? 'Tersimpan Tervalidasi di Server Aplikasi'
+                      : syncStatus.state === 'failed'
+                        ? 'Menunggu Sinkronisasi Ulang'
+                        : 'Tersimpan di Perangkat'}
               </strong>
             </span>
           </div>

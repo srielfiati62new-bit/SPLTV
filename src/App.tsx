@@ -68,10 +68,16 @@ export default function App() {
     setSyncStatus((prev) => ({
       ...prev,
       gasConfigured: res.gasConfigured,
+      sheetsLinked: res.sheetsLinked,
+      spreadsheetId: res.spreadsheetId,
+      spreadsheetTitle: res.spreadsheetTitle,
+      spreadsheetUrl: res.spreadsheetUrl,
       lastMessage: res.ok
-        ? res.gasConfigured
-          ? 'Server dan endpoint Google Apps Script terkonfigurasi.'
-          : 'Server aplikasi aktif (Mode Server Lokal — GAS belum diatur).'
+        ? res.sheetsLinked
+          ? `Terkoneksi dengan Google Sheets: ${res.spreadsheetTitle || res.spreadsheetId}.`
+          : res.gasConfigured
+            ? 'Server dan endpoint Google Apps Script terkonfigurasi.'
+            : 'Server aplikasi aktif. Hubungkan Google Sheets melalui Dashboard Guru.'
         : 'Server backend tidak merespons.',
     }));
   }, []);
